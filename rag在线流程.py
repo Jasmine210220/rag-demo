@@ -11,16 +11,19 @@ BASE_DIR = Path(__file__).resolve().parent
 
 # 这里配置测试数据路径
 CSV_PATH = BASE_DIR / "data" / "test_large.csv"
-# 这里配置新的向量库存储路径,和向量存储.py分开
+
+# 这里配置新的向量库存储路径，和向量存储.py 分开
 PERSIST_DIRECTORY = BASE_DIR / "chroma_db_rag_demo"
+
 # 当前向量库集合名称
 COLLECTION_NAME = "rag_demo"
+
 # 相似度检索时返回前几条最相关的数据
 TOP_K = 4
 
 
 def build_vector_store() -> Chroma:
-    # 创建一个Chroma向量存储对象
+    # 创建一个 Chroma 向量存储对象
     return Chroma(
         collection_name=COLLECTION_NAME,
         embedding_function=DashScopeEmbeddings(),
@@ -29,7 +32,7 @@ def build_vector_store() -> Chroma:
 
 
 def load_csv_documents():
-    # 先把CSV文件加载成Document对象列表
+    # 先把 CSV 文件加载成 Document 对象列表
     loader = CSVLoader(
         file_path=str(CSV_PATH),
         encoding="utf-8",
@@ -42,7 +45,7 @@ def ensure_documents(vector_store: Chroma) -> None:
     # 先检查当前向量库里是否已经有数据
     existing_count = vector_store._collection.count()
 
-    # 如果已有数据,就跳过导入,避免重复写入
+    # 如果已有数据，就跳过导入，避免重复写入
     if existing_count > 0:
         print(f"当前向量库已有 {existing_count} 条记录，跳过导入。")
         return
@@ -54,7 +57,7 @@ def ensure_documents(vector_store: Chroma) -> None:
 
 
 def format_docs(documents) -> str:
-    # 把检索到的多个Document整理成一个长字符串
+    # 把检索到的多个 Document 整理成一个长字符串
     blocks = []
     for index, doc in enumerate(documents, start=1):
         source = doc.metadata.get("source", "unknown")
@@ -63,22 +66,22 @@ def format_docs(documents) -> str:
 
 
 def ask_with_rag(question: str) -> str:
-    # 第一步:连接向量库
+    # 第一步：连接向量库
     vector_store = build_vector_store()
 
-    # 第二步:如果向量库为空,先导入CSV数据
+    # 第二步：如果向量库为空，先导入 CSV 数据
     ensure_documents(vector_store)
 
-    # 第三步:根据用户问题做相似度检索
+    # 第三步：根据用户问题做相似度检索
     docs = vector_store.similarity_search(question, k=TOP_K)
 
-    # 第四步:把检索结果拼成上下文
+    # 第四步：把检索结果拼成上下文
     context = format_docs(docs)
 
-    # 第五步:创建聊天模型对象
+    # 第五步：创建聊天模型对象
     model = ChatTongyi(model="qwen-max")
 
-    # 第六步:把用户问题和检索结果一起交给模型
+    # 第六步：把用户问题和检索结果一起交给模型
     messages = [
         SystemMessage(
             content=(
@@ -97,7 +100,7 @@ def ask_with_rag(question: str) -> str:
         ),
     ]
 
-    # 第七步:调用模型得到最终答案
+    # 第七步：调用模型得到最终答案
     response = model.invoke(messages)
     return response.content
 
