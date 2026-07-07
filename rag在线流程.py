@@ -4,7 +4,9 @@ from langchain_chroma import Chroma
 from langchain_community.chat_models.tongyi import ChatTongyi
 from langchain_community.document_loaders import CSVLoader
 from langchain_community.embeddings import DashScopeEmbeddings
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -65,6 +67,52 @@ def format_docs(documents) -> str:
     return "\n\n".join(blocks)
 
 
+def build_rag_chain(vector_store: Chroma):
+    # 这里定义检索函数：输入用户问题，输出格式化后的上下文
+    retriever = RunnableLambda(
+        lambda question: format_docs(
+            vector_store.similarity_search(question, k=TOP_K)
+        )
+    )
+
+    # 这里使用 ChatPromptTemplate 定义提示词模板
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "你是一个基于检索结果回答问题的助手。"
+                "请优先依据提供的参考资料回答，"
+                "不要编造资料中没有明确提到的事实。"
+                "如果参考资料不足以回答，就直接说明资料不足。",
+            ),
+            (
+                "human",
+                "用户问题：{question}\n\n"
+                "参考资料：\n{context}\n\n"
+                "请用简洁、准确的中文回答，并在最后附上你主要参考的 source。",
+            ),
+        ]
+    )
+
+    # 创建聊天模型对象
+    model = ChatTongyi(model="qwen-max")
+
+    # 创建字符串输出解析器
+    output_parser = StrOutputParser()
+
+    # 这里把“问题原样传递”和“根据问题做检索”一起写进链里
+    rag_chain = (
+        {
+            "question": RunnablePassthrough(),
+            "context": retriever,
+        }
+        | prompt
+        | model
+        | output_parser
+    )
+    return rag_chain
+
+
 def ask_with_rag(question: str) -> str:
     # 第一步：连接向量库
     vector_store = build_vector_store()
@@ -72,37 +120,12 @@ def ask_with_rag(question: str) -> str:
     # 第二步：如果向量库为空，先导入 CSV 数据
     ensure_documents(vector_store)
 
-    # 第三步：根据用户问题做相似度检索
-    docs = vector_store.similarity_search(question, k=TOP_K)
+    # 第三步：构建完整的 RAG 链
+    rag_chain = build_rag_chain(vector_store)
 
-    # 第四步：把检索结果拼成上下文
-    context = format_docs(docs)
-
-    # 第五步：创建聊天模型对象
-    model = ChatTongyi(model="qwen-max")
-
-    # 第六步：把用户问题和检索结果一起交给模型
-    messages = [
-        SystemMessage(
-            content=(
-                "你是一个基于检索结果回答问题的助手。"
-                "请优先依据提供的参考资料回答，"
-                "不要编造资料中没有明确提到的事实。"
-                "如果参考资料不足以回答，就直接说明资料不足。"
-            )
-        ),
-        HumanMessage(
-            content=(
-                f"用户问题：{question}\n\n"
-                f"参考资料：\n{context}\n\n"
-                "请用简洁、准确的中文回答，并在最后附上你主要参考的 source。"
-            )
-        ),
-    ]
-
-    # 第七步：调用模型得到最终答案
-    response = model.invoke(messages)
-    return response.content
+    # 第四步：直接把用户问题交给链执行
+    response = rag_chain.invoke(question)
+    return response
 
 
 if __name__ == "__main__":
