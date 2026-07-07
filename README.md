@@ -5,7 +5,12 @@
 1. 把本地 CSV 知识库写入向量数据库
 2. 在检索到相关内容后，把检索结果和用户问题一起交给大模型生成最终答案
 
-这个仓库适合用来理解最基础的 RAG 在线流程，不追求复杂工程结构，重点是先把流程跑通。
+这个仓库适合用来理解最基础的 RAG 在线流程，也适合用来学习 `LangChain` 中常见的链式写法，例如：
+
+- `ChatPromptTemplate`
+- `StrOutputParser`
+- `RunnableLambda`
+- `RunnablePassthrough`
 
 ## 1. 项目目标
 
@@ -41,7 +46,7 @@ rag_demo/
   演示如何把 CSV 数据加载为 `Document`，再写入 Chroma 向量库，并执行一次相似度检索。
 
 - `rag在线流程.py`
-  演示完整的 RAG 在线问答流程：先检索，再把检索结果和用户问题一起交给 `qwen-max` 生成答案。
+  演示完整的 RAG 在线问答流程，并且使用 `LangChain` 的链式写法，把“问题传递”和“向量检索”一起写入链中。
 
 ## 3. 运行前准备
 
@@ -96,7 +101,7 @@ data/test_large.csv
 
 文件：
 
-[向量存储.py](M:\Python-Project\ai\rag_demo\向量存储.py)
+`向量存储.py`
 
 这个脚本负责做以下几件事：
 
@@ -115,11 +120,12 @@ python .\向量存储.py
 如果运行成功，你会看到检索结果被打印出来。
 
 
+
 ## 6. 第二步：理解在线 RAG 流程
 
 文件：
 
-[rag在线流程.py](M:\Python-Project\ai\rag_demo\rag在线流程.py)
+`rag在线流程.py`
 
 这个脚本是在向量检索的基础上再往前走一步，完成完整问答流程。
 
@@ -128,10 +134,9 @@ python .\向量存储.py
 1. 连接向量库
 2. 检查向量库中是否已有数据
 3. 如果没有数据，就自动导入 `data/test_large.csv`
-4. 根据用户问题做相似度检索
-5. 把检索结果整理成上下文
-6. 把“用户问题 + 检索结果”一起发送给 `qwen-max`
-7. 输出最终回答
+4. 接收用户问题
+5. 用链式方式把“原始问题”和“检索结果”一起传入提示词模板
+6. 调用 `qwen-max` 生成最终回答
 
 运行命令：
 
@@ -144,20 +149,154 @@ python .\rag在线流程.py
 ```text
 用户提出问题
     ↓
-用问题去向量库检索
+问题进入 RAG 链
     ↓
-拿到最相关的几条资料
+一路原样保留为 question
     ↓
-把资料拼接成上下文
+一路进入向量检索，生成 context
     ↓
-把“用户问题 + 上下文”一起发给 qwen-max
+question 和 context 一起进入 prompt
     ↓
-模型输出最终答案
+交给 qwen-max 生成答案
+    ↓
+输出最终结果
 ```
 
-这就是最基础的 RAG。
+这就是最基础的链式 RAG。
 
-## 8. 这两个脚本的区别
+## 8. 现在这版 RAG 为什么更像 LangChain
+
+如果只是手动写：
+
+1. 先 `similarity_search`
+2. 再手动拼 `context`
+3. 最后 `model.invoke(...)`
+
+那虽然也能跑通，但更像“普通 Python 逻辑 + 调模型”。
+
+现在这版代码把这些步骤进一步组织成了链，核心写法是：
+
+```python
+rag_chain = (
+    {
+        "question": RunnablePassthrough(),
+        "context": retriever,
+    }
+    | prompt
+    | model
+    | output_parser
+)
+```
+
+这样做的好处是：
+
+- 链的结构更清晰
+- 每一步职责更明确
+- 更贴近 LangChain 推荐的 RAG 组合思路
+- 后面继续扩展 memory、history、retriever 都更自然
+
+## 9. RunnablePassthrough 的作用和用法
+
+这是这次改造里最关键的一个点。
+
+### 9.1 它是干什么的
+
+`RunnablePassthrough()` 的作用可以简单理解为：
+
+**把输入原样传下去，不做修改。**
+
+例如：
+
+```python
+RunnablePassthrough()
+```
+
+如果输入是：
+
+```python
+"什么是 embedding？"
+```
+
+那么它输出的还是：
+
+```python
+"什么是 embedding？"
+```
+
+### 9.2 在这个项目里它解决了什么问题
+
+在 RAG 中，一个用户问题通常要同时做两件事：
+
+1. 作为检索条件去查向量库
+2. 作为最终提示词里的“用户问题”交给模型
+
+也就是说，**同一个输入要拆成两路**。
+
+在本项目里，这两路分别是：
+
+- `question`
+  原样保留用户问题
+
+- `context`
+  用这个问题去做向量检索，再把结果整理成上下文
+
+对应的链式写法是：
+
+```python
+{
+    "question": RunnablePassthrough(),
+    "context": retriever,
+}
+```
+
+这里的意思是：
+
+- `question` 这一路直接保留原始输入
+- `context` 这一路把原始输入交给 `retriever`
+
+### 9.3 retriever 在这里做了什么
+
+本项目里写的是：
+
+```python
+retriever = RunnableLambda(
+    lambda question: format_docs(
+        vector_store.similarity_search(question, k=TOP_K)
+    )
+)
+```
+
+这说明：
+
+- 输入一个问题
+- 去向量库做相似度检索
+- 取回最相关的几条文档
+- 再调用 `format_docs()` 拼成字符串上下文
+
+最后链会自动把两路结果合并成：
+
+```python
+{
+    "question": "用户原问题",
+    "context": "检索出来的参考资料"
+}
+```
+
+再一起交给 `prompt`。
+
+### 9.4 为什么不用普通函数就好
+
+当然也可以只用普通函数先查，再把结果传给模型。  
+但是使用 `RunnablePassthrough + RunnableLambda` 的优势是：
+
+- 代码更贴近 LangChain 的链式思想
+- 数据流更直观
+- 更方便后续继续拼接别的步骤
+
+
+
+
+## 10. 这两个脚本的区别
 
 ### `向量存储.py`
 
@@ -175,40 +314,38 @@ python .\rag在线流程.py
 
 - 检索只是中间步骤
 - 最终目标是把检索结果交给大模型回答
+- 并且把这套过程写成 LangChain 链
 
-它更偏“完整 RAG 流程入门”。
+## 11. 运行时可能遇到的问题
 
-## 9. 运行时可能遇到的问题
-
-### 9.1 API Key 未配置
+### 11.1 API Key 未配置
 
 如果环境变量没有配好，模型调用和向量化都会失败。
 
-### 9.2 网络无法访问模型服务
+### 11.2 网络无法访问模型服务
 
 如果当前网络无法访问 DashScope / Tongyi 接口，脚本会在向量化或模型调用时报错。
 
-### 9.3 重复导入数据
+### 11.3 重复导入数据
 
 `rag在线流程.py` 中做了一个“如果向量库已有数据就跳过导入”的判断，这是为了避免每次运行都重复写入同一份 CSV。
 
-## 10. 下一步可以继续做什么
 
-如果你已经跑通这个项目，后面可以继续尝试：
-
-1. 把脚本里的固定问题改成终端输入问题
-2. 为检索结果打印 `source`、`title` 等信息
-3. 把 CSV 数据替换成你自己的知识库
-4. 加入文本切分，让更长的文档也能进入向量库
-5. 再继续尝试 PDF、TXT、JSON 等不同格式的数据加载
-
-## 11. 总结
+## 12. 总结
 
 这个仓库做的事情可以概括为两步：
 
 1. 先把知识库内容向量化并存入 Chroma
 2. 再把检索结果交给 `qwen-max` 生成最终答案
 
-如果你是刚开始学 RAG，这个项目已经覆盖了最核心的一条最小闭环：
+而在最新版本里，这个过程已经进一步写成了 LangChain 风格的链式 RAG：
 
-`本地数据 -> 向量存储 -> 相似度检索 -> 检索增强生成`
+- `RunnablePassthrough` 保留原始问题
+- `RunnableLambda` 完成检索
+- `ChatPromptTemplate` 组织提示词
+- `ChatTongyi` 调用模型
+- `StrOutputParser` 输出最终字符串结果
+
+这个项目已经覆盖了RAG最核心的一条最小闭环：
+
+`本地数据 -> 向量存储 -> 相似度检索 -> 检索增强生成 -> 链式调用`
